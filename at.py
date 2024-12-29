@@ -2,6 +2,7 @@ import os, re
 from dotenv import load_dotenv
 from atproto import AsyncClient
 from typing import Optional, Dict, List
+from datetime import datetime
 
 load_dotenv()
 
@@ -30,52 +31,71 @@ class AT:
         self.handle = os.getenv('BSKY_HANDLE')
         self.password = os.getenv('BSKY_APP_PASSWORD')
         self.profile = None
-
-        # Raw feed data
-        self.timeline = []  
-        self.post_index = {}
-
+        self.cursor = None
+        self.seen_posts = set()
+        self.oldest = None
+        self.posts = []
         self.initialized = False
 
     async def initialize(self):
         self.profile = await self.client.login(self.handle, self.password)
-        await self.fetch_timeline()
+        # load initial timeline
+        data = await self.client.get_timeline()
+        self.timeline = data.feed
+        for fv in self.timeline:
+            self.add_post(fv)
         self.initialized = True
 
-    async def fetch_timeline(self):
-        data = await self.client.get_timeline(algorithm='reverse-chronological')
-        self.timeline = data.feed
-        self.post_index = {
-            i + 1: {'cid': fv.post.cid, 'uri': fv.post.uri}
-            for i, fv in enumerate(self.timeline)
-        }
-
-    def find_feed_view(self, n: int):
-        pi = self.post_index.get(n)
-        if not pi:
+    def add_post(self, fv):
+        if fv.post.cid in self.seen_posts:
             return None
-        for fv in self.timeline:
-            if fv.post.cid == pi['cid']:
-                return fv
-        return None
 
-    def get_post_list(self, page: int = 1, page_size: int = 10) -> List:
-        start = (page - 1) * page_size
-        end = start + page_size
-        return self.timeline[start:end]
+        post = fv.post
+        post.reason = fv.reason # copy context into post
+        post.at = datetime.fromisoformat(post.indexed_at.replace('Z', '+00:00'))
+        if self.oldest is None or post.at < self.oldest:
+            self.oldest = post.at
+        self.posts.append(post)
+        self.seen_posts.add(post.cid)
+        return post
 
-    def get_author(self, fv) -> Author:
+    async def sync_timeline(self):
+        cursor = None
+        new_posts = []
+
+        while True:
+            try:
+                timeline = await self.client.get_timeline(limit=1, cursor=cursor)
+
+                for fv in timeline.feed:
+                    # only continue if it was a new post
+                    post = self.add_post(fv)
+                    if post and self.oldest < post.at:
+                        cursor = timeline.cursor
+                        new_posts.append(post)
+                    else:
+                        cursor = None                    
+
+            except Exception as e:
+                print(f"Error checking timeline: {e}")
+                return []
+
+            if not cursor:
+                break
+
+        return new_posts
+
+    def get_author(self, post) -> Author:
         # Get author from either repost reason or post author
-        author = getattr(getattr(fv, 'reason', None), 'by', None) or fv.post.author
+        author = getattr(getattr(post, 'reason', None), 'by', None) or post.author
         return Author(
             did=author.did,
             handle=author.handle,
             display_name=getattr(author, 'display_name', None)
         )
 
-    def format_post_for_irc(self, fv):
+    def format_post_for_irc(self, post):
         lines = []
-        post = fv.post
         if post.record.reply:
             return [] #ignore for now since we need to go get the replied-to post for context
 
@@ -87,7 +107,7 @@ class AT:
             formatted_lines[:] = [' '.join(formatted_lines)]
     
         # Handle reposts showing original author and indented
-        if hasattr(fv, 'reason') and hasattr(fv.reason, 'by'):
+        if hasattr(post, 'reason') and hasattr(post.reason, 'by'):
             lines.append(f"↻ @{post.author.handle}:")
             lines.extend(f" | {line}" for line in formatted_lines)
         else:
