@@ -103,6 +103,7 @@ class IRC:
         logging.info(f"Client {self.addr} auto-joined as {self.nick} to #timeline")
         self.joined_timeline = True
         self.send(f":{self.nick}!~@{os.getenv('BSKY_HANDLE')} JOIN #timeline")
+        self.send(f":{self.server_name} MODE #timeline +o {self.nick}")
         self.send(f":localhost 332 {self.nick} #timeline :Bluesky AT Bridge")
         await self.send_history()
 
@@ -153,11 +154,11 @@ class IRC:
 
     def send_channel(self, msg: str):
         if self.nick:
-            self.send(f":{self.nick}!~self@local PRIVMSG #timeline :{msg}")
+            self.send(f":{self.nick}!~@{os.getenv('BSKY_HANDLE')} PRIVMSG #timeline :{msg}")
 
     def ensure_author_joined(self, author: Author):
         if not self.joined_authors.get(author.nick):
-            self.send(f":{author.nick}!@{author.handle} JOIN #timeline")
+            self.send(f":{author.nick}!~@{author.handle} JOIN #timeline")
             self.joined_authors[author.nick] = True
             self.authors[author.nick] = author
             self.author_nicks[author.handle] = author.nick
@@ -165,6 +166,8 @@ class IRC:
     async def handle_who(self, target):
         if target != "#timeline":
             return
+        
+        self.send(f":{self.server_name} 352 {self.nick} #timeline * {self.server_name} {self.nick} H@ :0 {self.nick}")
         
         for nick, author in self.authors.items():
             flags = "H"  # H for "here"
@@ -177,7 +180,7 @@ class IRC:
             self.send(f":{self.server_name} 401 {self.nick} {nick} :No such nick")
             return
         
-        self.send(f":{self.server_name} 311 {self.nick} {nick} * {author.handle} * :{author.display_name or author.handle}")
+        self.send(f":{self.server_name} 311 {self.nick} {nick} ~ {author.handle} * :{author.display_name or author.handle}")
         self.send(f":{self.server_name} 319 {self.nick} {nick} :#timeline")
         
         self.send(f":{self.server_name} 320 {self.nick} {nick} :Bluesky ID: {author.did}")
@@ -191,7 +194,8 @@ class IRC:
         if target != "#timeline":
             return
         
-        names = list(self.authors.keys())
+        names = [f"@{self.nick}"]
+        names.extend(list(self.authors.keys()))
         chunk_size = 20
         for i in range(0, len(names), chunk_size):
             chunk = names[i:i + chunk_size]
@@ -215,7 +219,7 @@ class IRC:
 
         lines = self.at.format_post_for_irc(post)
         for line in lines:
-            self.send_tagged(f":{author.nick}!@{self.server_name} PRIVMSG #timeline :{line}", tags)
+            self.send_tagged(f":{author.nick}!~@{self.server_name} PRIVMSG #timeline :{line}", tags)
 
     async def handle_mode(self, target, args):
         if target == "#timeline":
