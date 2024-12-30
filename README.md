@@ -27,6 +27,8 @@ ATRelay is a bridge that connects Bluesky's AT Protocol to IRC, allowing you to 
 
 [Screenshot of Srain](media/Srain.png)
 
+[Screenshot of Textual](media/Textual.png)
+
 ## Installation
 
 1. Clone the repository:
@@ -48,7 +50,7 @@ BSKY_APP_PASSWORD=your-app-password
 
 4. Run the server:
 ```bash
-python app.py
+python server.py
 ```
 
 By default, the server runs on localhost:6667. Use `-p` to specify a different port and `-v` for verbose logging.
@@ -56,7 +58,7 @@ By default, the server runs on localhost:6667. Use `-p` to specify a different p
 ## Usage
 
 1. Connect to localhost:6667 with your IRC client
-2. You'll automatically join #timeline with the recent timeline
+2. You should automatically join #timeline with the recent timeline
 3. Watch your latest Bluesky timeline updates appear
 
 ## TODO
