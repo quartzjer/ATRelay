@@ -2,17 +2,20 @@ import asyncio, logging, argparse, signal
 from at import AT
 from irc import IRC
 
+VERSION = "0.1.0"
+
 class IRCServer:
     def __init__(self, at: AT, host: str, port: int):
         self.at = at
         self.host = host
         self.port = port
+        self.version = VERSION
         self.clients = set()
         self.server = None
         self._sync_task = None
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        client = IRC(self.at, reader, writer)
+        client = IRC(self.at, reader, writer, version=self.version)
         self.clients.add(client)
         try:
             await client.handle_connection()
@@ -67,6 +70,8 @@ async def main():
         format='%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+
+    logging.info(f"ATRelay version {VERSION} starting up")
 
     at = AT()
     await at.initialize()

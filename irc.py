@@ -5,10 +5,11 @@ from at import AT, Author
 SYNC_RATE = 30
 
 class IRC:
-    def __init__(self, at: AT, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    def __init__(self, at: AT, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, version: str = "0.0.0"):
         self.at = at
         self.reader = reader
         self.writer = writer
+        self.version = version
 
         self.joined_timeline = False
         self.running = True
@@ -98,7 +99,7 @@ class IRC:
         self.send(f":{self.server_name} 001 {self.nick} :Welcome to the Bluesky IRC Bridge, {self.nick}")
         self.send(f":{self.server_name} 002 {self.nick} :Running ATRelay IRC Bridge")
         self.send(f":{self.server_name} 003 {self.nick} :This server was created just now")
-        self.send(f":{self.server_name} 004 {self.nick} {self.server_name} 1.0 o o")
+        self.send(f":{self.server_name} 004 {self.nick} {self.server_name} {self.version} o o")
 
         logging.info(f"Client {self.addr} auto-joined as {self.nick} to #timeline")
         self.joined_timeline = True

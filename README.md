@@ -4,6 +4,7 @@ ATRelay is a bridge that connects Bluesky's AT Protocol to IRC, allowing you to 
 
 ## Features
 
+v0.1.0:
 - Real-time Bluesky timeline in IRC format
 - Auto-join of #timeline channel
 - Rich post formatting:
@@ -23,11 +24,11 @@ ATRelay is a bridge that connects Bluesky's AT Protocol to IRC, allowing you to 
 
 ## Screenshots
 
-[Screenshot of HexChat](media/HexChat.png)
+![Screenshot of HexChat](media/HexChat.png)
 
-[Screenshot of Srain](media/Srain.png)
+![Screenshot of Srain](media/Srain.png)
 
-[Screenshot of Textual](media/Textual.png)
+![Screenshot of Textual](media/Textual.png)
 
 ## Installation
 
