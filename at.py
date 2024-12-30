@@ -44,15 +44,18 @@ class AT:
         data = await self.client.get_timeline(limit=100)
         self.timeline = data.feed
         for fv in self.timeline:
-            self.add_post(fv)
+            self.add_fv(fv)
         self.initialized = True
 
-    def add_post(self, fv):
-        if fv.post.cid in self.seen_posts:
-            return None
+    def add_fv(self, fv):
+        post = self.add_post(fv.post)
+        if post and fv.reason:
+            post._reason = fv.reason
+        return post
 
-        post = fv.post
-        post._reason = fv.reason # copy context into post
+    def add_post(self, post):
+        if post.cid in self.seen_posts:
+            return None
         post._at = datetime.fromisoformat(post.indexed_at.replace('Z', '+00:00'))
         if self.oldest is None or post._at < self.oldest:
             self.oldest = post._at
@@ -71,14 +74,14 @@ class AT:
 
                 for fv in timeline.feed:
                     # only continue if it was a new post
-                    post = self.add_post(fv)
+                    post = self.add_fv(fv)
                     if post and self.oldest < post._at:
                         cursor = timeline.cursor
                         new_posts.append(post)
                     else:
                         cursor = None
 
-            except Exception as e:
+            except Exception:
                 logging.exception("Error checking timeline")
                 return []
 
@@ -86,6 +89,16 @@ class AT:
                 break
 
         return new_posts
+
+    async def sync_post(self, uri: str):
+        try:
+            response = await self.client.get_posts([uri])
+            if response and response.posts:
+                return response.posts[0]
+            return None
+        except Exception:
+            logging.exception("Error checking timeline")
+            return None
 
     def get_author(self, post) -> Author:
         # Get author from either repost reason or post author
@@ -96,8 +109,10 @@ class AT:
             display_name=getattr(author, 'display_name', None)
         )
 
-    def format_post_for_irc(self, post):
-        # replies need to have parent in history already (TODO go fetch parent)
+    async def format_post_for_irc(self, post):
+        lines = []
+
+        # handle replies based on context
         reply_ok = False
         if post.record.reply:
             if hasattr(post.record.reply.parent, 'cid'):
@@ -105,7 +120,12 @@ class AT:
                 if parent_cid in self.seen_posts:
                     reply_ok = True
             if not reply_ok:
-                return []
+                parent = await self.sync_post(post.record.reply.parent.uri)
+                if parent:
+                    self.add_post(parent)
+                    parent_formatted = self.format_record(parent.record)
+                    lines.append(f"↩ {parent.author.display_name} (@{parent.author.handle}):")
+                    lines.extend(f" | {line}" for line in parent_formatted)
 
         logging.debug("Post data: %s", post.model_dump_json())
 
@@ -114,7 +134,6 @@ class AT:
         formatted_lines.extend(self.format_embed(post.embed, post.uri))
     
         # Handle reposts showing original author and indented
-        lines = []
         if hasattr(post, '_reason') and hasattr(post._reason, 'by'):
             lines.append(f"↻ {post.author.display_name} (@{post.author.handle}):")
             lines.extend(f" | {line}" for line in formatted_lines)
