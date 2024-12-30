@@ -1,9 +1,7 @@
-import asyncio, logging, time
-from datetime import datetime
+import asyncio, logging, os
 from typing import Optional, Dict, List
 from at import AT, Author
 
-PAGE_SIZE = 50
 SYNC_RATE = 30
 
 class IRC:
@@ -27,6 +25,11 @@ class IRC:
 
         self.capabilities = set()
         self.cap_negotiating = False
+
+        self.registered = False
+        self.got_nick = False
+        self.got_user = False
+        self.joined_timeline = False
 
     async def handle_connection(self):
         try:
@@ -59,20 +62,19 @@ class IRC:
         cmd = parts[0].upper()
         if cmd == 'CAP':
             await self.handle_capability(parts[1:])
+        elif cmd == 'PING':
+            self.send(f"PONG :{parts[1]}" if len(parts) > 1 else "PONG")
         elif cmd == 'NICK':
             old_nick = self.nick
             self.nick = parts[1] if len(parts) > 1 else 'anon'
+            self.got_nick = True
             logging.info(f"Client {self.addr} nick change: {old_nick} → {self.nick}")
+            if self.got_user:
+                await self.finish_registration()
         elif cmd == 'USER':
-            pass
-        elif cmd == 'JOIN':
-            if len(parts) > 1 and parts[1] == '#timeline':
-                logging.info(f"Client {self.nick} joined #timeline")
-                self.joined_timeline = True
-                self.send(f":{self.nick}!~user@local JOIN #timeline")
-                self.send(f":localhost 332 {self.nick} #timeline :Bluesky AT Bridge")
-                # Once joined, push the existing posts into the channel
-                await self.send_history()
+            self.got_user = True
+            if self.got_nick:
+                await self.finish_registration()
         elif cmd == 'PRIVMSG' and self.joined_timeline:
             if len(parts) > 2 and parts[1] == '#timeline':
                 msg = line.split(' ', 2)[2][1:] if len(line.split(' ', 2)) > 2 else ''
@@ -83,6 +85,24 @@ class IRC:
             await self.handle_who(parts[1])
         elif cmd == 'WHOIS' and len(parts) > 1:
             await self.handle_whois(parts[1])
+        elif cmd == 'NAMES' and len(parts) > 1:
+            await self.handle_names(parts[1])
+
+    async def finish_registration(self):
+        if self.registered:
+            return
+            
+        self.registered = True
+        self.send(f":{self.server_name} 001 {self.nick} :Welcome to the Bluesky IRC Bridge, {self.nick}")
+        self.send(f":{self.server_name} 002 {self.nick} :Running ATRelay IRC Bridge")
+        self.send(f":{self.server_name} 003 {self.nick} :This server was created just now")
+        self.send(f":{self.server_name} 004 {self.nick} {self.server_name} 1.0 o o")
+
+        logging.info(f"Client {self.addr} auto-joined as {self.nick} to #timeline")
+        self.joined_timeline = True
+        self.send(f":{self.nick}!~@{os.getenv('BSKY_HANDLE')} JOIN #timeline")
+        self.send(f":localhost 332 {self.nick} #timeline :Bluesky AT Bridge")
+        await self.send_history()
 
     async def handle_capability(self, args):
         if not args:
@@ -161,11 +181,18 @@ class IRC:
         
         self.send(f":localhost 318 {self.nick} {nick} :End of WHOIS list")
 
+    async def handle_names(self, target):
+        if target != "#timeline":
+            return
+        
+        self.send(f":{self.server_name} 353 {self.nick} = #timeline :{' '.join(self.authors.keys())}")
+        self.send(f":{self.server_name} 366 {self.nick} #timeline :End of NAMES list")
+
     async def send_history(self):
         if not self.at.posts:
             self.send_channel("No posts.")
             return
-        for post in sorted(self.at.posts, key=lambda p: p.at):
+        for post in sorted(self.at.posts, key=lambda p: p._at):
             await self.send_post_as_author(post)
 
     async def send_post_as_author(self, post):
@@ -173,16 +200,12 @@ class IRC:
         self.ensure_author_joined(author)
 
         tags = {
-            'time': post.at.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            'time': post._at.strftime('%Y-%m-%dT%H:%M:%S.000Z')
         }
 
         lines = self.at.format_post_for_irc(post)
         for _, line in enumerate(lines):
             self.send_tagged(f":{author.nick}!@{self.server_name} PRIVMSG #timeline :{line}", tags)
-
-    async def do_refresh(self):
-        await self.at.fetch_timeline()
-        self.send_channel("AT refreshed.")
 
     async def sync_loop(self):
         while self.running:

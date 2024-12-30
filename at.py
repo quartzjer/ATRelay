@@ -40,7 +40,7 @@ class AT:
     async def initialize(self):
         self.profile = await self.client.login(self.handle, self.password)
         # load initial timeline
-        data = await self.client.get_timeline()
+        data = await self.client.get_timeline(limit=100)
         self.timeline = data.feed
         for fv in self.timeline:
             self.add_post(fv)
@@ -51,10 +51,10 @@ class AT:
             return None
 
         post = fv.post
-        post.reason = fv.reason # copy context into post
-        post.at = datetime.fromisoformat(post.indexed_at.replace('Z', '+00:00'))
-        if self.oldest is None or post.at < self.oldest:
-            self.oldest = post.at
+        post._reason = fv.reason # copy context into post
+        post._at = datetime.fromisoformat(post.indexed_at.replace('Z', '+00:00'))
+        if self.oldest is None or post._at < self.oldest:
+            self.oldest = post._at
         self.posts.append(post)
         self.seen_posts.add(post.cid)
         return post
@@ -71,7 +71,7 @@ class AT:
                 for fv in timeline.feed:
                     # only continue if it was a new post
                     post = self.add_post(fv)
-                    if post and self.oldest < post.at:
+                    if post and self.oldest < post._at:
                         cursor = timeline.cursor
                         new_posts.append(post)
                     else:
@@ -102,13 +102,12 @@ class AT:
 
         print(post.model_dump_json())
 
-        formatted_lines = self.format_post(post.record)
+        formatted_lines = self.format_record(post.record)
+        formatted_lines.extend(self.format_links(post, formatted_lines))
         formatted_lines.extend(self.format_embed(post.embed, post.uri))
-        if len(formatted_lines) == 2:
-            formatted_lines[:] = [' '.join(formatted_lines)]
     
         # Handle reposts showing original author and indented
-        if hasattr(post, 'reason') and hasattr(post.reason, 'by'):
+        if hasattr(post, '_reason') and hasattr(post._reason, 'by'):
             lines.append(f"↻ @{post.author.handle}:")
             lines.extend(f" | {line}" for line in formatted_lines)
         else:
@@ -116,21 +115,28 @@ class AT:
 
         return lines
 
-    def format_post(self, record):
-        text = (record.text or '(no text)').strip()
+    def format_links(self, post, lines):
+        links = set()
         
-        lines = re.split(r'\r\n|\r|\n', text)
-        lines = [line for line in lines if line.strip()]
-
-        facet_links = []
+        record = post.record
         if hasattr(record, 'facets') and record.facets:
             for facet in record.facets:
                 if facet.py_type == 'app.bsky.richtext.facet':
                     for feature in facet.features:
                         if feature.py_type == 'app.bsky.richtext.facet#link':
-                            facet_links.append(feature.uri)
+                            links.add(feature.uri)
 
-        lines[-1] += " " + " ".join(facet_links)
+        if post.embed:
+            if 'external' in post.embed.py_type:
+                links.add(post.embed.external.uri)
+
+        return [f"🔗 {link}" for link in links if not any(link in line for line in lines)]
+
+    def format_record(self, record):
+        text = (record.text or '(no text)').strip()
+        
+        lines = re.split(r'\r\n|\r|\n', text)
+        lines = [line for line in lines if line.strip()]
         return lines
 
     def format_embed(self, e, uri):
@@ -145,16 +151,13 @@ class AT:
             return lines
         elif e.py_type == 'app.bsky.embed.record#view':
             if hasattr(e.record, 'value'):
-                formatted_lines = self.format_post(e.record.value)
+                formatted_lines = self.format_record(e.record.value)
                 formatted_lines.extend(self.format_embed(e.record.value.embed, e.record.uri))
                 lines = [f"💬 @{e.record.author.handle}:"]
                 lines.extend(f" | {line}" for line in formatted_lines)
                 return lines
-        elif 'external' in e.py_type:
-            return [f"🔗 {e.external.uri}"]
         elif e.py_type == 'app.bsky.embed.video#view':
             alt_text = f"{e.alt.replace('\n',' ').strip()} " if getattr(e, 'alt', None) else ""
-            # use the atproto browser site for the video player
             did_match = re.search(r'did:plc:[^/]+', uri)
             if did_match and e.cid:
                 did = did_match.group(0)
