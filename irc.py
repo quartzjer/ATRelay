@@ -21,7 +21,7 @@ class IRC:
 
         self.addr = writer.get_extra_info('peername')
         logging.info(f"New connection from {self.addr}")
-        self.server_name = "bridge"
+        self.server_name = os.getenv('IRC_SERVER_NAME', 'bridge.local')
 
         self.capabilities = set()
         self.cap_negotiating = False
@@ -34,7 +34,6 @@ class IRC:
     async def handle_connection(self):
         try:
             self.send("NOTICE * :Welcome to the Bluesky IRC Bridge, JOIN #timeline")
-            asyncio.create_task(self.sync_loop())
             
             while self.running:
                 try:
@@ -63,7 +62,10 @@ class IRC:
         if cmd == 'CAP':
             await self.handle_capability(parts[1:])
         elif cmd == 'PING':
-            self.send(f"PONG :{parts[1]}" if len(parts) > 1 else "PONG")
+            self.send(f"PONG {parts[1]}" if len(parts) > 1 else "PONG :")
+        elif cmd == 'MODE':
+            if len(parts) > 1:
+                await self.handle_mode(parts[1], parts[2:] if len(parts) > 2 else [])
         elif cmd == 'NICK':
             old_nick = self.nick
             self.nick = parts[1] if len(parts) > 1 else 'anon'
@@ -141,7 +143,11 @@ class IRC:
 
     def send_tagged(self, msg: str, tags: Dict[str, str] = None):
         if tags and 'message-tags' in self.capabilities:
-            tag_str = ' '.join(f"{k}={v}" for k, v in tags.items())
+            escaped_tags = {
+                k: v.replace('\\', '\\\\').replace(';', '\\:').replace(' ', '\\s')
+                for k, v in tags.items()
+            }
+            tag_str = ';'.join(f"{k}={escaped_tags[k]}" for k, v in tags.items())
             msg = f"@{tag_str} {msg}"
         self.send(msg)
 
@@ -162,30 +168,34 @@ class IRC:
         
         for nick, author in self.authors.items():
             flags = "H"  # H for "here"
-            self.send(f":localhost 352 {self.nick} #timeline * {author.handle} {nick} {flags} :0 {author.display_name or author.handle}")
-        self.send(f":localhost 315 {self.nick} #timeline :End of WHO list")
+            self.send(f":{self.server_name} 352 {self.nick} #timeline * {author.handle} {nick} {flags} :0 {author.display_name or author.handle}")
+        self.send(f":{self.server_name} 315 {self.nick} #timeline :End of WHO list")
 
     async def handle_whois(self, nick):
         author = self.authors.get(nick)
         if not author:
-            self.send(f":localhost 401 {self.nick} {nick} :No such nick")
+            self.send(f":{self.server_name} 401 {self.nick} {nick} :No such nick")
             return
         
-        self.send(f":localhost 311 {self.nick} {nick} * {author.handle} * :{author.display_name or author.handle}")
-        self.send(f":localhost 319 {self.nick} {nick} :#timeline")
+        self.send(f":{self.server_name} 311 {self.nick} {nick} * {author.handle} * :{author.display_name or author.handle}")
+        self.send(f":{self.server_name} 319 {self.nick} {nick} :#timeline")
         
-        self.send(f":localhost 320 {self.nick} {nick} :Bluesky ID: {author.did}")
-        self.send(f":localhost 320 {self.nick} {nick} :Handle: @{author.handle}")
+        self.send(f":{self.server_name} 320 {self.nick} {nick} :Bluesky ID: {author.did}")
+        self.send(f":{self.server_name} 320 {self.nick} {nick} :Handle: @{author.handle}")
         if author.display_name:
-            self.send(f":localhost 320 {self.nick} {nick} :Display Name: {author.display_name}")
+            self.send(f":{self.server_name} 320 {self.nick} {nick} :Display Name: {author.display_name}")
         
-        self.send(f":localhost 318 {self.nick} {nick} :End of WHOIS list")
+        self.send(f":{self.server_name} 318 {self.nick} {nick} :End of WHOIS list")
 
     async def handle_names(self, target):
         if target != "#timeline":
             return
         
-        self.send(f":{self.server_name} 353 {self.nick} = #timeline :{' '.join(self.authors.keys())}")
+        names = list(self.authors.keys())
+        chunk_size = 20
+        for i in range(0, len(names), chunk_size):
+            chunk = names[i:i + chunk_size]
+            self.send(f":{self.server_name} 353 {self.nick} = #timeline :{' '.join(chunk)}")
         self.send(f":{self.server_name} 366 {self.nick} #timeline :End of NAMES list")
 
     async def send_history(self):
@@ -204,12 +214,21 @@ class IRC:
         }
 
         lines = self.at.format_post_for_irc(post)
-        for _, line in enumerate(lines):
+        for line in lines:
             self.send_tagged(f":{author.nick}!@{self.server_name} PRIVMSG #timeline :{line}", tags)
 
-    async def sync_loop(self):
-        while self.running:
-            new_posts = await self.at.sync_timeline()
-            for post in new_posts:
-                await self.send_post_as_author(post)
-            await asyncio.sleep(SYNC_RATE)
+    async def handle_mode(self, target, args):
+        if target == "#timeline":
+            self.send(f":{self.server_name} 324 {self.nick} #timeline +nt")
+        elif target == self.nick:
+            self.send(f":{self.server_name} 221 {self.nick} +")
+
+    async def shutdown(self):
+        self.running = False
+        if self.writer:
+            try:
+                self.send("ERROR :Server shutting down")
+                self.writer.close()
+                await self.writer.wait_closed()
+            except:
+                pass

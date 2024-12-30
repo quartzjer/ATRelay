@@ -12,6 +12,7 @@ def sanitize(field: str) -> str:
     field = field.replace(' ', '_')
     # strip out anything but letters, digits, and underscores
     base = re.sub(r'[^A-Za-z0-9_]', '', field)
+    base = re.sub(r'_+$', '', base)
     if not base:
         base = "_nohandle"
     if base[0].isdigit():
@@ -88,7 +89,7 @@ class AT:
 
     def get_author(self, post) -> Author:
         # Get author from either repost reason or post author
-        author = getattr(getattr(post, 'reason', None), 'by', None) or post.author
+        author = getattr(getattr(post, '_reason', None), 'by', None) or post.author
         return Author(
             did=author.did,
             handle=author.handle,
@@ -96,9 +97,15 @@ class AT:
         )
 
     def format_post_for_irc(self, post):
-        lines = []
+        # replies need to have parent in history already (TODO go fetch parent)
+        reply_ok = False
         if post.record.reply:
-            return [] #ignore for now since we need to go get the replied-to post for context
+            if hasattr(post.record.reply.parent, 'cid'):
+                parent_cid = post.record.reply.parent.cid
+                if parent_cid in self.seen_posts:
+                    reply_ok = True
+            if not reply_ok:
+                return []
 
         print(post.model_dump_json())
 
@@ -107,11 +114,14 @@ class AT:
         formatted_lines.extend(self.format_embed(post.embed, post.uri))
     
         # Handle reposts showing original author and indented
+        lines = []
         if hasattr(post, '_reason') and hasattr(post._reason, 'by'):
-            lines.append(f"↻ @{post.author.handle}:")
+            lines.append(f"↻ {post.author.display_name} (@{post.author.handle}):")
             lines.extend(f" | {line}" for line in formatted_lines)
         else:
             lines.extend(formatted_lines)
+            if reply_ok:
+                lines[0] = f"↪ {lines[0]}"
 
         return lines
 
@@ -133,9 +143,10 @@ class AT:
         return [f"🔗 {link}" for link in links if not any(link in line for line in lines)]
 
     def format_record(self, record):
-        text = (record.text or '(no text)').strip()
+        if not record.text:
+            return []
         
-        lines = re.split(r'\r\n|\r|\n', text)
+        lines = re.split(r'\r\n|\r|\n', record.text.strip())
         lines = [line for line in lines if line.strip()]
         return lines
 
@@ -147,13 +158,14 @@ class AT:
             lines = []
             for x in e.images:
                 alt_text = f"{x.alt.replace('\n',' ').strip()} " if getattr(x, 'alt', None) else ""
+                alt_text = alt_text[:47] + "..." if len(alt_text) > 50 else alt_text
                 lines.append(f"📷 {alt_text}{x.fullsize or x.thumb} ")
             return lines
         elif e.py_type == 'app.bsky.embed.record#view':
             if hasattr(e.record, 'value'):
                 formatted_lines = self.format_record(e.record.value)
                 formatted_lines.extend(self.format_embed(e.record.value.embed, e.record.uri))
-                lines = [f"💬 @{e.record.author.handle}:"]
+                lines = [f"💬 {e.record.author.display_name} (@{e.record.author.handle}):"]
                 lines.extend(f" | {line}" for line in formatted_lines)
                 return lines
         elif e.py_type == 'app.bsky.embed.video#view':
