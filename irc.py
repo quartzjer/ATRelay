@@ -4,6 +4,7 @@ from typing import Optional, Dict, List
 from at import AT, Author
 
 PAGE_SIZE = 50
+SYNC_RATE = 30
 
 class IRC:
     def __init__(self, at: AT, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -30,6 +31,7 @@ class IRC:
     async def handle_connection(self):
         try:
             self.send("NOTICE * :Welcome to the Bluesky IRC Bridge, JOIN #timeline")
+            asyncio.create_task(self.sync_loop())
             
             while self.running:
                 try:
@@ -69,8 +71,8 @@ class IRC:
                 self.joined_timeline = True
                 self.send(f":{self.nick}!~user@local JOIN #timeline")
                 self.send(f":localhost 332 {self.nick} #timeline :Bluesky AT Bridge")
-                # Once joined, push the first page of posts into IRC
-                await self.send_posts(page=1)
+                # Once joined, push the existing posts into the channel
+                await self.send_history()
         elif cmd == 'PRIVMSG' and self.joined_timeline:
             if len(parts) > 2 and parts[1] == '#timeline':
                 msg = line.split(' ', 2)[2][1:] if len(line.split(' ', 2)) > 2 else ''
@@ -105,24 +107,10 @@ class IRC:
 
         cmd = m[0].lower()
         
-        if cmd == '!page' and len(m) > 1 and m[1].isdigit():
-            page_num = int(m[1])
-            await self.send_posts(page_num)
-
-        elif cmd == '!detail' and len(m) > 1 and m[1].isdigit():
-            n = int(m[1])
-            fv = self.at.find_feed_view(n)
-            if not fv:
-                self.send_channel(f"No post found for #{n}")
-                return
-            # Send full detail from the author
-            await self.send_post_as_author(fv)
-
-        elif cmd == '!refresh':
-            await self.do_refresh()
-
+        if cmd == '!echo' and len(m) > 1:
+            self.send_channel(' '.join(m[1:]))
         else:
-            self.send_channel("Commands: !page N, !detail N, !refresh")
+            self.send_channel("Commands: !echo <text>")
 
     def send(self, msg: str):
         try:
@@ -137,17 +125,13 @@ class IRC:
             msg = f"@{tag_str} {msg}"
         self.send(msg)
 
-    def send_channel(self, msg: str, timestamp: datetime = None):
+    def send_channel(self, msg: str):
         if self.nick:
-            tags = {}
-            if timestamp:
-                ts = timestamp.timestamp()
-                tags['time'] = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%dT%H:%M:%S.000Z')
-            self.send_tagged(f":{self.nick}!~self@local PRIVMSG #timeline :{msg}", tags)
+            self.send(f":{self.nick}!~self@local PRIVMSG #timeline :{msg}")
 
     def ensure_author_joined(self, author: Author):
         if not self.joined_authors.get(author.nick):
-            self.send(f":{author.nick}@{author.handle} JOIN #timeline")
+            self.send(f":{author.nick}!@{author.handle} JOIN #timeline")
             self.joined_authors[author.nick] = True
             self.authors[author.nick] = author
             self.author_nicks[author.handle] = author.nick
@@ -158,7 +142,7 @@ class IRC:
         
         for nick, author in self.authors.items():
             flags = "H"  # H for "here"
-            self.send(f":localhost 352 {self.nick} #timeline user {author.handle} {nick} {flags} :0 {author.display_name or author.handle}")
+            self.send(f":localhost 352 {self.nick} #timeline * {author.handle} {nick} {flags} :0 {author.display_name or author.handle}")
         self.send(f":localhost 315 {self.nick} #timeline :End of WHO list")
 
     async def handle_whois(self, nick):
@@ -167,7 +151,7 @@ class IRC:
             self.send(f":localhost 401 {self.nick} {nick} :No such nick")
             return
         
-        self.send(f":localhost 311 {self.nick} {nick} user {author.handle} * :{author.display_name or author.handle}")
+        self.send(f":localhost 311 {self.nick} {nick} * {author.handle} * :{author.display_name or author.handle}")
         self.send(f":localhost 319 {self.nick} {nick} :#timeline")
         
         self.send(f":localhost 320 {self.nick} {nick} :Bluesky ID: {author.did}")
@@ -177,27 +161,32 @@ class IRC:
         
         self.send(f":localhost 318 {self.nick} {nick} :End of WHOIS list")
 
-    async def send_posts(self, page: int):
-        posts = self.at.get_post_list(page, page_size=PAGE_SIZE)
-        if not posts:
-            self.send_channel("No posts to show on that page.")
+    async def send_history(self):
+        if not self.at.posts:
+            self.send_channel("No posts.")
             return
-        for fv in posts:
-            await self.send_post_as_author(fv)
+        for post in sorted(self.at.posts, key=lambda p: p.at):
+            await self.send_post_as_author(post)
 
-    async def send_post_as_author(self, fv):
-        author = self.at.get_author(fv)
+    async def send_post_as_author(self, post):
+        author = self.at.get_author(post)
         self.ensure_author_joined(author)
 
-        timestamp = datetime.fromisoformat(fv.post.record.created_at.replace('Z', '+00:00'))
         tags = {
-            'time': timestamp.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            'time': post.at.strftime('%Y-%m-%dT%H:%M:%S.000Z')
         }
 
-        lines = self.at.format_post_for_irc(fv)
+        lines = self.at.format_post_for_irc(post)
         for _, line in enumerate(lines):
             self.send_tagged(f":{author.nick}!@{self.server_name} PRIVMSG #timeline :{line}", tags)
 
     async def do_refresh(self):
         await self.at.fetch_timeline()
         self.send_channel("AT refreshed.")
+
+    async def sync_loop(self):
+        while self.running:
+            new_posts = await self.at.sync_timeline()
+            for post in new_posts:
+                await self.send_post_as_author(post)
+            await asyncio.sleep(SYNC_RATE)

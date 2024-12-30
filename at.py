@@ -66,6 +66,7 @@ class AT:
         while True:
             try:
                 timeline = await self.client.get_timeline(limit=1, cursor=cursor)
+                cursor = None
 
                 for fv in timeline.feed:
                     # only continue if it was a new post
@@ -74,7 +75,7 @@ class AT:
                         cursor = timeline.cursor
                         new_posts.append(post)
                     else:
-                        cursor = None                    
+                        cursor = None
 
             except Exception as e:
                 print(f"Error checking timeline: {e}")
