@@ -1,4 +1,4 @@
-import os, re
+import os, re, logging
 from dotenv import load_dotenv
 from atproto import AsyncClient
 from typing import Optional, Dict, List
@@ -79,7 +79,7 @@ class AT:
                         cursor = None
 
             except Exception as e:
-                print(f"Error checking timeline: {e}")
+                logging.exception("Error checking timeline")
                 return []
 
             if not cursor:
@@ -107,7 +107,7 @@ class AT:
             if not reply_ok:
                 return []
 
-        print(post.model_dump_json())
+        logging.debug("Post data: %s", post.model_dump_json())
 
         formatted_lines = self.format_record(post.record)
         formatted_lines.extend(self.format_links(post, formatted_lines))
