@@ -218,7 +218,7 @@ class IRC:
             'time': post._at.strftime('%Y-%m-%dT%H:%M:%S.000Z')
         }
 
-        lines = await self.at.format_post_for_irc(post)
+        lines = await self.at.format_post_as_text(post)
         for line in lines:
             self.send_tagged(f":{author.nick}!~@{self.server_name} PRIVMSG #timeline :{line}", tags)
 

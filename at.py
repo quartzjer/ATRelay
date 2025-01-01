@@ -109,7 +109,7 @@ class AT:
             display_name=getattr(author, 'display_name', None)
         )
 
-    async def format_post_for_irc(self, post):
+    async def format_post_as_text(self, post):
         lines = []
 
         # handle replies based on context
